@@ -1,138 +1,197 @@
 # terraform-volcenginecc-rds-cluster
 
-Draft Terraform module for private, highly available RDS MySQL deployments on VolcengineCC, covering MultiNode clusters and DoubleNode primary/standby deployments with read-only replicas.
+Create private, highly available RDS MySQL instances with VolcengineCC and configure primary/secondary topology, read replicas, read/write splitting and backups.
 
 ## 1. Overview
 
-The module owns one RDS MySQL instance and its complete node topology, one database allowlist, an optional parameter template and optional custom private writer/reader proxy endpoints. The caller owns the VPC, database subnet and security groups, and configures Provider authentication and region. The subnet must belong to the VPC and primary AZ; all nodes must be in the same region and at most three AZs. These relationships require cloud-side validation.
+This module creates one private RDS MySQL HA instance, its node topology and allowlist, with optional parameter templates and writer/reader proxies. MultiNode uses readable Secondary replicas; DoubleNode uses a standby and optional ReadOnly replicas. Provide an existing VPC, a subnet in the primary AZ and security groups. All nodes share one region and span at most three AZs; HA and automatic failover are provided by RDS.
 
-MultiNode has one Primary and 1–8 readable Secondary replicas. DoubleNode has one Primary, one Secondary standby and 0–10 ReadOnly replicas. Secondary specifications must match the Primary. Automatic failover is a service capability; this module has not completed a failover test. A single-AZ deployment does not survive an AZ outage. Reserve an unloaded Secondary for MultiNode failover where the service recommends it.
-
-AWS Aurora cluster/replica/global examples and Alibaba Cloud RDS HA are scenario references. This is conventional RDS MySQL, without Aurora shared-storage semantics or an AWS-compatible Global Database. PostgreSQL, cross-region global replication, backup restore and zero-downtime online replica expansion are outside this draft.
+![Architecture boundary diagram](https://bytedance.larkoffice.com/space/api/box/stream/download/asynccode/?code=ZDJjOGRmOGZlNzkzZWM5MjM5ZjI2ZTU5M2NjZTgyMWVfVll5YkpsU1B0Tk1iSktXSmU5Y3Nmd1k1Rk5hS2ZtWmhfVG9rZW46TUVpYWIwYjRtb0JCVWV4a0tNbmNrSWk5bmNoXzE3MzEzNDc2OTU6MTczMTM1MTI5NV9WNA)
 
 ## 2. Usage
 
-Configure authentication through `VOLCENGINE_ACCESS_KEY` and `VOLCENGINE_SECRET_KEY`. Provide the administrator password using `TF_VAR_administrator_password`, without committing it. Caller variables supply existing resource IDs and an available regional node specification.
+Prepare an existing VPC, database subnet, 1–10 security groups and a regional RDS MySQL node specification compatible with the storage type. The subnet must belong to the VPC and primary AZ. Restrict security group ingress rules to actual client networks. The deployment identity needs RDS and Cloud Control resource management permissions, with sufficient account balance and quotas.
+
+Declare version constraints and the provider source in the calling project's `versions.tf`. This configuration uses the same provider version as basic/complete:
+
+```hcl
+terraform {
+  required_version = ">= 1.5.7, < 1.12.0"
+  required_providers {
+    volcenginecc = {
+      source  = "volcengine/volcenginecc"
+      version = "= 0.0.73"
+    }
+  }
+}
+```
+
+Configure the region in the calling project's `providers.tf`:
 
 ```hcl
 provider "volcenginecc" {
   region = var.region
 }
+```
 
+Declare inputs in the calling project's `variables.tf`:
+
+```hcl
+variable "region" {
+  type = string
+}
+
+variable "network" {
+  type = object({
+    vpc_id             = string
+    subnet_id          = string
+    security_group_ids = set(string)
+    primary_zone_id    = string
+  })
+}
+
+variable "node_spec" {
+  type = string
+}
+
+variable "administrator_password" {
+  type      = string
+  sensitive = true
+}
+```
+
+Create a single-AZ MultiNode instance in the calling project's `main.tf`:
+
+```hcl
 module "cluster" {
   source = "terraform-volcenginecc-modules/rds-cluster/volcenginecc"
 
   instance_name          = "application-cluster"
-  vpc_id                 = var.vpc_id
-  subnet_id              = var.subnet_id
-  security_group_ids     = var.security_group_ids
+  vpc_id                 = var.network.vpc_id
+  subnet_id              = var.network.subnet_id
+  security_group_ids     = var.network.security_group_ids
   administrator_password = var.administrator_password
-  require_multi_az       = true
   nodes = {
-    primary   = { node_type = "Primary", node_spec = var.node_spec, zone_id = var.primary_zone_id }
-    secondary = { node_type = "Secondary", node_spec = var.node_spec, zone_id = var.secondary_zone_id }
+    primary   = { node_type = "Primary", node_spec = var.node_spec, zone_id = var.network.primary_zone_id }
+    secondary = { node_type = "Secondary", node_spec = var.node_spec, zone_id = var.network.primary_zone_id }
   }
 }
 ```
 
-Registry source `terraform-volcenginecc-modules/rds-cluster/volcenginecc` is the intended publication address. No release has been confirmed and Registry consumption remains unverified. Static validation rewrites sources only in isolated temporary copies. Root Provider, credentials, region and backend remain under caller control.
+Set `region`, `node_spec` and the complete `network` object in the calling project's `terraform.tfvars`. Supply provider credentials through `VOLCENGINE_ACCESS_KEY` and `VOLCENGINE_SECRET_KEY`, and the administrator password through `TF_VAR_administrator_password`. Keep credentials out of source and variable files.
+
+Run `terraform init`, `terraform plan` and `terraform apply` in the calling directory. Define caller outputs using `module.cluster.instance_id`, `module.cluster.writer_endpoints` and `module.cluster.topology`. Applications need a network path to the database's private VPC addresses.
 
 ## 3. Examples
 
-- basic: single-AZ MultiNode cluster with one primary and one readable secondary, restricted security groups, default backup policy and service-created endpoints.
-- complete: cross-AZ DoubleNode primary/standby plus a ReadOnly replica, custom private writer with read/write splitting, a reader without primary fallback, fourteen-day running-instance backup retention, tags and a parameter template.
-- cross-az: MultiNode primary/secondary in different AZs. Add distinct Secondary tuples to express more replicas; at most eight secondaries and three AZs.
-- readonly-scale-out: DoubleNode target read capacity using a logical-key replica map. This is a creation/target-capacity example; topology edits can replace the whole instance with the current Provider.
+- basic: single-AZ MultiNode with one primary and one readable secondary, default backups and service-created endpoints; requires an existing VPC, primary-AZ subnet and security groups.
+- complete: cross-AZ DoubleNode with one primary, one standby and one ReadOnly replica, custom private writer/reader proxies, a parameter template, tags and fourteen-day backup retention; requires an existing network and different primary/standby AZs.
+- cross-az: MultiNode with the primary and readable secondary in different AZs; requires an existing network and specification availability in both AZs.
+- readonly-scale-out: a replica map defines DoubleNode target read capacity with writer/reader proxies; requires an existing network and at least one ReadOnly replica. Topology changes can replace the instance.
 
-Each example requires an existing network. For custom Proxy endpoints, the module requests proxy CPU cores through the writable instance `cpu_num` field at creation. Proxy status remains Computed and must be verified independently. No endpoint silently falls back to Direct mode. Security groups use explicit `SecurityGroupBindInfos` with `IngressDirectionIp`.
+Run each example from its own `examples/basic`, `examples/complete`, `examples/cross-az` or `examples/readonly-scale-out` directory. All examples use `terraform.tfvars` for inputs.
 
 ## 4. Requirements
 
-| Requirement | Contract |
+| Name | Version |
 |---|---|
-| Terraform | Exact validation target: `1.5.7` |
-| OpenTofu | Exact validation target: `1.11.8` |
-| Shared engine range | `>= 1.5.7, < 1.12.0`; other versions in this range are not individually verified |
-| Minimum Provider | `0.0.60`; used resources and fields checked against its published Schema |
-| Current Provider | `0.0.73`; examples pin this release |
-| Prerequisites | RDS/Cloud Control permissions, sufficient balance/quotas, valid regional specification, caller-owned network |
-
-Status: `draft`. Both examples passed the retained configuration's real-cloud lifecycle on 2026-11-05 with Terraform 1.5.7 and Registry Provider 0.0.73: apply, independent control-plane readback, refreshed no-change plan, normal deletion-protection update and first standard destroy. State was empty and independent API queries confirmed managed resource absence. The module does not provide backup public-download control, retention after release or custom domain prefixes because the online Handler/Provider does not reliably support those settings. SQL routing is blocked by private-network reachability; failover and Registry consumption remain unverified.
+| Terraform | `>= 1.5.7, < 1.12.0` |
+| `volcengine/volcenginecc` | Root module `>= 0.0.60`; basic/complete pin `= 0.0.73` |
 
 ## 5. Providers
 
-| Name | Source | Version |
-|---|---|---|
-| `volcenginecc` | `volcengine/volcenginecc` | Root `>= 0.0.60`; examples `= 0.0.73` |
+| Name | Source |
+|---|---|
+| `volcenginecc` | `volcengine/volcenginecc` |
+
+The module inherits the caller's default provider configuration without an alias. The caller configures region and authentication.
 
 ## 6. Resources
 
-| Name | Mode | Responsibility |
+| Mode | Type | Name |
 |---|---|---|
-| `volcenginecc_rdsmysql_instance.this` | Resource | Instance and all nodes; [Provider documentation](https://registry.terraform.io/providers/volcengine/volcenginecc/0.0.73/docs/resources/rdsmysql_instance) |
-| `volcenginecc_rdsmysql_allow_list.this` | Resource | Restricted client CIDRs and security-group association; [Provider documentation](https://registry.terraform.io/providers/volcengine/volcenginecc/0.0.73/docs/resources/rdsmysql_allow_list) |
-| `volcenginecc_rdsmysql_parameter_template.this` | Optional resource | Create-time parameter template binding; [Provider documentation](https://registry.terraform.io/providers/volcengine/volcenginecc/0.0.73/docs/resources/rdsmysql_parameter_template) |
-| `volcenginecc_rdsmysql_endpoint.writer`, `volcenginecc_rdsmysql_endpoint.reader` | Optional resources | DoubleNode proxies; writer creates before reader, reader destroys before writer; [Provider documentation](https://registry.terraform.io/providers/volcengine/volcenginecc/0.0.73/docs/resources/rdsmysql_endpoint) |
-| `data.volcenginecc_rdsmysql_endpoint.proxy` | Data sources | Read actual private domains/IPs after custom endpoint creation; [Provider documentation](https://registry.terraform.io/providers/volcengine/volcenginecc/0.0.73/docs/data-sources/rdsmysql_endpoint) |
+| Create | `volcenginecc_rdsmysql_instance` | [volcenginecc_rdsmysql_instance.this](https://registry.terraform.io/providers/volcengine/volcenginecc/0.0.73/docs/resources/rdsmysql_instance) |
+| Create | `volcenginecc_rdsmysql_allow_list` | [volcenginecc_rdsmysql_allow_list.this](https://registry.terraform.io/providers/volcengine/volcenginecc/0.0.73/docs/resources/rdsmysql_allow_list) |
+| Optional create | `volcenginecc_rdsmysql_parameter_template` | [volcenginecc_rdsmysql_parameter_template.this](https://registry.terraform.io/providers/volcengine/volcenginecc/0.0.73/docs/resources/rdsmysql_parameter_template) |
+| Optional create | `volcenginecc_rdsmysql_endpoint` | [volcenginecc_rdsmysql_endpoint.writer](https://registry.terraform.io/providers/volcengine/volcenginecc/0.0.73/docs/resources/rdsmysql_endpoint) |
+| Optional create | `volcenginecc_rdsmysql_endpoint` | [volcenginecc_rdsmysql_endpoint.reader](https://registry.terraform.io/providers/volcengine/volcenginecc/0.0.73/docs/resources/rdsmysql_endpoint) |
+| Optional read | `volcenginecc_rdsmysql_endpoint` | [data.volcenginecc_rdsmysql_endpoint.proxy](https://registry.terraform.io/providers/volcengine/volcenginecc/0.0.73/docs/data-sources/rdsmysql_endpoint) |
 
-Default endpoints are observed through the instance and owned by its service lifecycle. No independent readonly-node resource competes with `instance.nodes`.
+The module always creates one instance and one allowlist. Setting `parameter_template` creates one template. Enabling `create_proxy_endpoints` creates two proxies and reads their private addresses. Service-default endpoints follow the instance lifecycle, and the instance owns the entire node topology. The module does not create VPCs, subnets or security groups.
 
 ## 7. Inputs
 
-| Name | Type | Default | Requirement and meaning |
-|---|---|---|---|
-| `instance_name` | `string` | Required | Starts with a letter; up to 128 characters, at most 57 with custom proxies |
-| `vpc_id` | `string` | Required | Caller-owned VPC |
-| `subnet_id` | `string` | Required | Caller-owned primary-AZ database subnet in the VPC |
-| `security_group_ids` | `set(string)` | Required | 1–10 caller-owned restricted security groups |
-| `allowed_cidrs` | `set(string)` | `null` | Additional IPv4 access; nonempty when set; /0 rejected |
-| `instance_type` | `string` | `"MultiNode"` | MultiNode or DoubleNode; replacement on change |
-| `nodes` | `map(object({node_spec=string,node_type=string,zone_id=string}))` | Required | Complete topology; roles Primary/Secondary/ReadOnly; duplicate tuples rejected |
-| `require_multi_az` | `bool` | `false` | Require every Secondary to differ from the Primary AZ |
-| `db_engine_version` | `string` | `"MySQL_8_0"` | MySQL_5_7 or MySQL_8_0; InnoDB engine fixed |
-| `storage_space_gb` | `number` | `100` | Integer, at least 20; specification limits apply; replacement on change |
-| `storage_type` | `string` | `"LocalSSD"` | LocalSSD, CloudESSD_FlexPL or CloudESSD_PL0 |
-| `administrator_name` | `string` | `"clusteradmin"` | Create-time privileged name; replacement on change |
-| `administrator_password` | `string`, sensitive | Required | 8–32 allowed characters and three character classes; create-time, persisted in State |
-| `port` | `number` | `3306` | Integer 1000–65534; replacement on change |
-| `deletion_protection` | `bool` | `true` | Disable with a separate apply before destruction |
-| `backup_policy` | `object({retention_days=optional(number,7),weekdays=optional(set(string),all seven weekdays),start_utc_hour=optional(number,18),binlog_enabled=optional(bool,true)})` | `{}` | Running-instance retention and schedule; release retention and public-download control are excluded |
-| `parameter_template` | `object({name=string,description=optional(string),parameters=map(string)})` | `null` | Module-owned template; nonempty parameters; version matches instance |
-| `existing_parameter_template_id` | `string` | `null` | Caller-owned template; mutually exclusive with parameter_template |
-| `create_proxy_endpoints` | `bool` | `false` | DoubleNode with ReadOnly replicas only; requests proxy CPU cores at instance creation |
-| `proxy_cpu_num` | `number` | `2` | Proxy CPU cores, integer 2–1024; must also meet the API minimum for the primary specification |
-| `read_replica_max_delay_seconds` | `number` | `30` | Integer 1–3600 seconds for writer proxy read routing; omitted for the ReadOnly reader; eventual consistency |
-| `project_name` | `string` | `null` | Resource project; replacement on instance project change |
-| `tags` | `map(string)` | `null` | Nonempty key/value map when set; no implicit tags |
+| Name | Type | Default | Required in create mode | Description |
+|---|---|---|---|---|
+| `instance_name` | `string` | None | Yes | 1–128 characters, starting with a letter; letters, digits, underscores and hyphens only. At most 57 characters with custom proxies. |
+| `vpc_id` | `string` | None | Yes | Existing VPC ID, starting with `vpc-`. |
+| `subnet_id` | `string` | None | Yes | Existing database subnet ID, starting with `subnet-`; must belong to the specified VPC and primary AZ. |
+| `security_group_ids` | `set(string)` | None | Yes | 1–10 existing security group IDs, starting with `sg-`; binding to the allowlist imports ingress IP rules. |
+| `allowed_cidrs` | `set(string)` | `null` | No | Additional IPv4 allowlist entries; a nonempty set with prefixes greater than 0 when specified. `null` uses security group rules only. |
+| `instance_type` | `string` | `"MultiNode"` | No | `MultiNode` or `DoubleNode`; node roles and counts must match the selected topology. Changing it replaces the instance. |
+| `nodes` | `map(object({node_spec=string,node_type=string,zone_id=string}))` | None | Yes | Complete topology with at least two nodes. Each requires a specification, role and AZ; roles are `Primary`, `Secondary` or `ReadOnly`. |
+| `require_multi_az` | `bool` | `false` | No | When `true`, every Secondary must be in a different AZ from Primary. Does not constrain the ReadOnly AZ. |
+| `db_engine_version` | `string` | `"MySQL_8_0"` | No | `MySQL_5_7` or `MySQL_8_0`, with InnoDB fixed as the engine. Changing it replaces the instance. |
+| `storage_space_gb` | `number` | `100` | No | Storage in GiB; integer of at least 20, also subject to service specification limits. Changing it replaces the instance. |
+| `storage_type` | `string` | `"LocalSSD"` | No | `LocalSSD`, `CloudESSD_FlexPL` or `CloudESSD_PL0`; select a type compatible with the region and node specification. |
+| `administrator_name` | `string` | `"clusteradmin"` | No | Privileged account created with the instance; 1–32 characters, starting with a lowercase letter, using lowercase letters, digits and underscores. Changing it replaces the instance. |
+| `administrator_password` | `string` | None | Yes | Sensitive input; 8–32 allowed characters, including at least three of uppercase letters, lowercase letters, digits and special characters. Changing it replaces the instance. |
+| `port` | `number` | `3306` | No | Private database port, integer 1000–65534. Changing it replaces the instance. |
+| `deletion_protection` | `bool` | `true` | No | Instance deletion protection. Apply `false` separately before destroying. |
+| `backup_policy` | `object` | `{}` | No | Running-instance backup retention and schedule; field types, defaults and limits appear below. |
+| `parameter_template` | `object({name=string,description=optional(string),parameters=map(string)})` | `null` | No | Create a module-managed parameter template. Name and parameter map are required and nonempty; parameter names and values must be nonempty. Its version matches the instance. |
+| `existing_parameter_template_id` | `string` | `null` | No | Bind an existing template; cannot be an empty string when specified. Mutually exclusive with `parameter_template`. Changing the binding replaces the instance. |
+| `create_proxy_endpoints` | `bool` | `false` | No | Create private writer/reader proxies for DoubleNode with at least one ReadOnly replica. Requests proxy CPU cores at instance creation. |
+| `proxy_cpu_num` | `number` | `2` | No | Proxy CPU cores, integer 2–1024; also must meet the API minimum `max(2, primary CPU cores × 0.125)` and regional limits. Used only for custom proxies. |
+| `read_replica_max_delay_seconds` | `number` | `30` | No | Maximum replication lag allowed for writer proxy read routing, integer 1–3600 seconds. Omitted for the read-only reader; does not guarantee strong consistency. |
+| `project_name` | `string` | `null` | No | Project for managed resources. Changing the instance project replaces the instance. |
+| `tags` | `map(string)` | `null` | No | Instance tags; the map, keys and values must be nonempty when specified. No implicit tags. |
 
-`nodes` keys label configuration, not Terraform resource addresses. The Provider owns a set: renaming a key without changing its tuple has no resource effect, while duplicate role/specification/AZ tuples would collapse and are rejected. Primary and Secondary always share a specification. Billing is fixed to PostPaid; Optional+Computed billing fields are left undeclared rather than ignored.
+For `nodes`, MultiNode requires one Primary and 1–8 readable Secondary replicas, without ReadOnly nodes. DoubleNode requires one Primary, one Secondary and 0–10 ReadOnly replicas. All Secondary specifications must match Primary. Specifications start with `rds.mysql.`, AZs must be nonempty, and the instance can span at most three AZs.
+
+Node map keys are configuration labels. The provider manages nodes as a set of specification/role/AZ tuples. Renaming a key does not change a node; duplicate tuples are rejected. Review the Plan for whole-instance replacement when changing nodes.
+
+The complete `backup_policy` type and field defaults are:
+
+```hcl
+object({
+  retention_days = optional(number, 7)
+  weekdays = optional(set(string), [
+    "Monday", "Tuesday", "Wednesday", "Thursday",
+    "Friday", "Saturday", "Sunday"
+  ])
+  start_utc_hour = optional(number, 18)
+  binlog_enabled = optional(bool, true)
+})
+```
+
+`retention_days` is an integer from 7 to 3650 days. `weekdays` is a nonempty set containing only the seven English day names above. `start_utc_hour` is an integer from 0 to 23 in UTC; the default 18 corresponds to 02:00 the following day in Beijing. Binlog retention is synchronized with data backup retention.
+
+The password allows letters, digits and special characters `!@#$%^&*()_+=,.&?|/-`. Billing is fixed to pay-as-you-go (`PostPaid`). A `null` optional input leaves the setting unspecified; it does not clear an existing service-side value.
 
 ## 8. Outputs
 
-| Name | Type | Meaning |
+| Name | Type | Description |
 |---|---|---|
-| `instance_id` | `string` | Module-owned instance ID |
-| `instance_status` | `string` | Provider-reported status; unknown until cloud read |
-| `writer_endpoints` | `map(object({id=string,read_write_mode=string,connection_mode=string,read_write_splitting=bool,private_addresses=list(object({domain=string,ip_address=string,port=string,subnet_id=string}))}))` | Custom key writer or default endpoint IDs; private addresses only; can be empty |
-| `reader_endpoints` | `map(object({id=string,read_write_mode=string,connection_mode=string,read_write_splitting=bool,private_addresses=list(object({domain=string,ip_address=string,port=string,subnet_id=string}))}))` | Custom key reader or default endpoint IDs; empty if no ReadOnly endpoint is reported |
-| `topology` | `object({nodes=map(object({node_spec=string,node_type=string,zone_id=string})),secondary_count=number,readonly_count=number,availability_zones=set(string),observed_node_count=string})` | Configured node labels/counts and separately observed count |
-| `allow_list_id` | `string` | Module-owned allowlist ID |
-| `parameter_template_id` | `string` or `null` | Managed or caller-owned template; null when unspecified |
+| `instance_id` | `string` | Managed RDS MySQL instance ID for instance queries and connection configuration. |
+| `instance_status` | `string` | Provider-reported instance status; unknown before creation and readback. |
+| `writer_endpoints` | `map(object({id=string,read_write_mode=string,connection_mode=string,read_write_splitting=bool,private_addresses=list(object({domain=string,ip_address=string,port=string,subnet_id=string}))}))` | Private read/write endpoints; keyed by `writer` in custom mode or actual endpoint IDs in default mode. May be an empty map if the service reports no matching endpoint. |
+| `reader_endpoints` | `map(object({id=string,read_write_mode=string,connection_mode=string,read_write_splitting=bool,private_addresses=list(object({domain=string,ip_address=string,port=string,subnet_id=string}))}))` | Private read-only endpoints; keyed by `reader` in custom mode or actual endpoint IDs in default mode. Empty when no ReadOnly endpoint is reported. |
+| `topology` | `object({nodes=map(object({node_spec=string,node_type=string,zone_id=string})),secondary_count=number,readonly_count=number,availability_zones=set(string),observed_node_count=string})` | Configured nodes, secondary/read-only counts and AZ set, plus the service-reported total node count. Node keys are not service node IDs. |
+| `allow_list_id` | `string` | Module-managed database allowlist ID. |
+| `parameter_template_id` | `string`, nullable | Managed or caller-supplied parameter template ID; `null` when no template is configured. |
 
-No administrator password is output. A writer proxy handles writes on Primary and can distribute reads; use the reader for explicit read-only traffic. Missing reader information produces an empty map, never a fabricated domain or an alias of the writer. Read-only endpoints do not provide read-after-write consistency.
+Applications obtain domains, IPs and ports from `private_addresses`. Only private addresses are returned; address lists can also be empty. Use `reader_endpoints` for read-only access. An empty reader map is not a connection address and is never replaced with a writer address.
+
+`read_write_splitting` reports an endpoint's splitting switch; actual read routing depends on its members. A primary-only read/write endpoint sends both reads and writes to Primary. For MultiNode splitting, select the cluster endpoint containing Primary and readable Secondary members. A custom writer sends writes to Primary and distributes reads to ReadOnly replicas. A reader connects only to ReadOnly replicas without Primary fallback; replica reads do not guarantee immediate visibility after a write.
 
 ## 9. Notes
 
-The published Schema supports MultiNode and DoubleNode, but the [CreateDBNodes API](https://www.volcengine.com/docs/6313/1359331) adds Secondary to MultiNode and ReadOnly to DoubleNode. The [CreateDBEndpoint API](https://www.volcengine.com/docs/6313/170670) restricts custom creation to DoubleNode. MultiNode default endpoint splitting is observed, not configurable through this module. Custom endpoints require all replica IDs to appear in service-created endpoint weights and a working database proxy; the module rejects incomplete read-back instead of guessing identifiers.
-
-Provider create-only fields include engine/version, instance type, node specification/role/AZ, storage size/type, network IDs, port, project, privileged credentials and parameter binding. A changed specification or AZ can replace the entire instance. Online addition/removal, password rotation and topology migration require Provider improvements and real-cloud acceptance; review every plan for replacement. No `ignore_changes`, SDK, local-exec or remote script hides these limitations.
-
-Parameter templates are bound at creation. Changing a template's contents is not proof that running database parameters change; verify running values separately. Optional+Computed backup, tags, billing and endpoint fields need a refreshed second plan to establish no-change behavior. Null optional inputs leave values unspecified and do not promise remote clearing. Write-only credentials are still held by Terraform/OpenTofu State; protect State and saved Plan JSON, and keep debug logging disabled for credentials.
-
-Import is supported by the underlying Provider: instance/allowlist/template use their resource IDs; custom endpoint identity is `instance_id|endpoint_id`. Import is a deliberate State migration, not an automatic existing-resource mode. Reconstruct the exact topology and review replacement before applying imported resources.
-
-Deletion protection defaults to true. For an authorized cleanup, first apply `deletion_protection=false`, then destroy. The module does not configure backup public-download access or retention after release; these settings are controlled by the service. Final deletion queries reported Last/7 retention, which is not a module guarantee. Retained backups may remain billable and are not module-owned resources. Query active instances, endpoints, allowlist, managed template and retained backups after deletion; caller-owned networking remains external. No final snapshot is created.
-
-Custom domains are generated by the service and returned through the endpoint data source. Custom domain prefixes and address edits are excluded because online Create/Read does not reliably preserve them. Proxy operations use a module dependency to avoid overlapping writes to the same instance. The complete lifecycle passed first standard destruction, with reader deleted before writer. Moved blocks migrate former `endpoint.proxy["writer"]` and `endpoint.proxy["reader"]` resource addresses; output keys remain writer/reader. Remove the former `endpoint_domain_prefix`, `keep_policy_after_release` and `keep_days_after_release` arguments from callers when upgrading.
-
-The retained Terraform configuration passed both real-cloud lifecycles. SQL routing, failover and module Registry publication/consumption remain unverified.
+- The module manages the instance, entire node topology, allowlist and optional template/proxies. The caller maintains existing VPCs, subnets, security groups and external templates. Import instances, allowlists and templates by their resource IDs; custom endpoint import identity is `instance_id|endpoint_id`. Reconstruct the actual configuration after import and review the replacement scope in the Plan.
+- Primary and Secondary must use the same specification. A single-AZ deployment cannot withstand an AZ outage. For AZ fault isolation, place Primary and Secondary in different AZs and set `require_multi_az = true`. This module configures RDS MySQL, without Aurora shared storage or cross-region Global Database.
+- Custom proxies require DoubleNode with ReadOnly replicas. The instance's default endpoint information must report all ReadOnly node IDs so proxy membership can be configured. MultiNode uses service-default endpoints; the module does not change their splitting policies. Proxy addresses are service-generated; custom domain prefixes are not exposed.
+- The custom writer is created before the reader and destroyed after it. New nodes do not automatically join these endpoints. Review the Plan for instance replacement before changing topology, instance type, engine, storage, network, port, project or parameter binding. Editing the topology map is not a guarantee of zero-downtime online scaling.
+- Parameter templates are bound when the instance is created. After editing a template, check the database's running parameters; template values alone do not establish live settings.
+- After deployment, run a normal `terraform plan` again and expect no changes to confirm idempotence.
+- Before destroying, disable deletion protection with a separate apply. Destroy removes module-managed resources and retains caller-owned networking and external templates. The module creates no final snapshot and does not configure backup retention after release or public backup download. Save required backups separately before release and check service-retained backups and charges afterward.
+- For existing callers, `moved` blocks migrate former `volcenginecc_rdsmysql_endpoint.proxy["writer"]` and `volcenginecc_rdsmysql_endpoint.proxy["reader"]` addresses. Output keys remain `writer`/`reader`. Remove the former `endpoint_domain_prefix`, `keep_policy_after_release` and `keep_days_after_release` arguments.

@@ -1,7 +1,3 @@
-provider "volcenginecc" {
-  region = var.region
-}
-
 module "cluster" {
   source = "terraform-volcenginecc-modules/rds-cluster/volcenginecc"
 
