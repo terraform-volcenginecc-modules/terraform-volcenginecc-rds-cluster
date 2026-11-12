@@ -6,7 +6,6 @@
 
 本模块创建一个私网 RDS MySQL 高可用实例及其完整节点拓扑和数据库白名单，可选创建参数模板与 writer/reader 代理端点。MultiNode 使用可读 Secondary 副本，DoubleNode 使用主备节点和可选 ReadOnly 副本。调用方提供已有 VPC、位于主节点可用区的数据库子网和安全组；所有节点位于同一地域，最多分布在三个可用区。高可用和自动故障切换由 RDS 服务提供。
 
-![架构边界图](https://bytedance.larkoffice.com/space/api/box/stream/download/asynccode/?code=ZDJjOGRmOGZlNzkzZWM5MjM5ZjI2ZTU5M2NjZTgyMWVfVll5YkpsU1B0Tk1iSktXSmU5Y3Nmd1k1Rk5hS2ZtWmhfVG9rZW46TUVpYWIwYjRtb0JCVWV4a0tNbmNrSWk5bmNoXzE3MzEzNDc2OTU6MTczMTM1MTI5NV9WNA)
 
 ## 2. 用法（Usage）
 

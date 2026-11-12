@@ -6,7 +6,6 @@ Create private, highly available RDS MySQL instances with VolcengineCC and confi
 
 This module creates one private RDS MySQL HA instance, its node topology and allowlist, with optional parameter templates and writer/reader proxies. MultiNode uses readable Secondary replicas; DoubleNode uses a standby and optional ReadOnly replicas. Provide an existing VPC, a subnet in the primary AZ and security groups. All nodes share one region and span at most three AZs; HA and automatic failover are provided by RDS.
 
-![Architecture boundary diagram](https://bytedance.larkoffice.com/space/api/box/stream/download/asynccode/?code=ZDJjOGRmOGZlNzkzZWM5MjM5ZjI2ZTU5M2NjZTgyMWVfVll5YkpsU1B0Tk1iSktXSmU5Y3Nmd1k1Rk5hS2ZtWmhfVG9rZW46TUVpYWIwYjRtb0JCVWV4a0tNbmNrSWk5bmNoXzE3MzEzNDc2OTU6MTczMTM1MTI5NV9WNA)
 
 ## 2. Usage
 
