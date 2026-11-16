@@ -1,7 +1,3 @@
-provider "volcenginecc" {
-  region = var.region
-}
-
 # This expresses target capacity. Current node create-only fields can replace
 # an existing instance; this is not a promise of in-place online scale-out.
 module "cluster" {
